@@ -1,41 +1,53 @@
-# coding: utf-8
+"""Example bot implementation: snitram.
 
-from pythonbots.globais import *
+This bot moves erratically with a constant forward acceleration and
+rotates its cannon rapidly.  It maintains a fixed scan arc while
+searching.  Upon detecting an enemy it slows the cannon rotation and
+begins firing continuously.  When it bumps into a wall it reverses
+direction for a short time to avoid getting stuck.
+"""
 
-wait = 0
+from __future__ import annotations
 
-def snitram(handler):
-        """
-        Movimentacao: Bastante movimentacao, com aceleracao e giro e giro do canhao
-        Ataque: Nao altera o o angulo de radar e ao detectar inimigo
-                reduz o giro do canhao e mantem atirando
-        """
+from pythonbots.constants import (
+    PI,
+    VISION_RANGE,
+    DANGEROUS_TEMPERATURE,
+    HEAT_PER_SHOT,
+    ARENA_WIDTH,
+    ARENA_HEIGHT,
+    RADIUS,
+)
 
-        global wait
 
-        dist, i = handler.scan()        # escaneia
+wait_counter: int = 0
 
-        # se achou bot
-        if dist < VISAO:
 
-                handler.girarCanhao(0.01)
-                if handler.getTemperatura() < TEMP_DANOSA - AQUECIMENTO_TIRO:
-                        handler.atirar()
-
-        else:
-
-                handler.setArco(PI/8.0)
-                handler.acelerar(.8)
-                handler.girar(.002)
-                handler.girarCanhao(.05)
-
-        wait -= 1 if wait > 0 else 0
-
-        # trata colisao
-
-        if wait == 0 and (handler.getPosicao().x >= TAM_X - (RAIO*2) or handler.getPosicao().x <= RAIO*2 or \
-           handler.getPosicao().y >= TAM_Y - (RAIO*2) or handler.getPosicao().y <= RAIO*2):
-                wait = 100
-                handler.acelerar(-1.0)
-                handler.girar(PI)
-
+def snitram(handler: "pythonbots.bot.Handler") -> None:
+    """Control function for the snitram bot."""
+    global wait_counter
+    distance, _ = handler.scan()
+    if distance < VISION_RANGE:
+        # Target detected: slow the cannon and fire continuously
+        handler.rotate_cannon(0.01)
+        if handler.get_temperature() < DANGEROUS_TEMPERATURE - HEAT_PER_SHOT:
+            handler.shoot()
+    else:
+        # Sweep with a wide arc and move quickly forward while rotating
+        handler.set_arc(PI / 8.0)
+        handler.accelerate(0.8)
+        handler.turn(0.002)
+        handler.rotate_cannon(0.05)
+    # Countdown for collision handling
+    wait_counter = wait_counter - 1 if wait_counter > 0 else 0
+    pos = handler.get_position()
+    # If time elapsed and we are near a wall, reverse direction
+    if wait_counter == 0 and (
+        pos.x >= ARENA_WIDTH - (RADIUS * 2)
+        or pos.x <= RADIUS * 2
+        or pos.y >= ARENA_HEIGHT - (RADIUS * 2)
+        or pos.y <= RADIUS * 2
+    ):
+        wait_counter = 100
+        handler.accelerate(-1.0)
+        handler.turn(PI)

@@ -1,50 +1,56 @@
-# coding: utf-8
+"""Example bot implementation: ccoria.
 
-from pythonbots.globais import *
+This bot drifts slowly backwards while sweeping its scan arc.  When it
+detects an enemy it attempts to align the front of its hull with the
+edge of the scan arc so that the cannon points directly at the target.
+It accelerates slowly toward the target, firing whenever possible and
+narrowing its scan arc.  If the target is lost it widens the scan arc
+again and resumes drifting.
+"""
 
-mira = False
-acel = MAX_GIRO * .01
+from __future__ import annotations
 
-def ccoria(handler):
-        """
-        Movimentacao: Anda sempre de re bem devagar e com pouco giro
-        Ataque: Mantem sempre o canhao junto a proa, ao detectar efetua um
-                giro para alinha a proa com a borda de deteccao do radar, na
-                tentativa de alinhar o canhao com o alvo(se este estiver parado),
-                em seguida comeca a atirar e fechar a mira com pouca aceleracao
-                em direcao ao alvo
-        """
+from pythonbots.constants import (
+    PI,
+    VISION_RANGE,
+    DANGEROUS_TEMPERATURE,
+    HEAT_PER_SHOT,
+    MAX_TURN_RATE,
+)
 
-        global mira, acel
 
-        dist, id = handler.scan()       # scaneia
+tracking: bool = False
+accel_rate: float = MAX_TURN_RATE * 0.01
 
-        # achou inimigo
-        if dist < VISAO:
 
-                if not mira:
-                        handler.girar(handler.getArco()/2.0 - handler.getVelAngular())
-
-                handler.acelerar(.1)
-                if handler.getTemperatura() < TEMP_DANOSA - AQUECIMENTO_TIRO:
-                        handler.atirar()
-                mira = True
-                handler.setArco(handler.getArco() - .01)
-
-        elif mira:
-
-                mira = False
-                handler.girar(handler.getArco()/2.0)
-                acel = MAX_GIRO * .01
-
+def ccoria(handler: "pythonbots.bot.Handler") -> None:
+    """Control function for the ccoria bot."""
+    global tracking, accel_rate
+    distance, _ = handler.scan()
+    if distance < VISION_RANGE:
+        # Target detected: if we weren't tracking, align hull with scan edge
+        if not tracking:
+            handler.turn(handler.get_arc() / 2.0 - handler.get_angular_velocity())
+        # Accelerate slightly forward
+        handler.accelerate(0.1)
+        # Fire if cool enough
+        if handler.get_temperature() < DANGEROUS_TEMPERATURE - HEAT_PER_SHOT:
+            handler.shoot()
+        tracking = True
+        # Narrow the scan arc to focus on the target
+        handler.set_arc(handler.get_arc() - 0.01)
+    elif tracking:
+        # Lost the target: reset tracking and turn by half the arc
+        tracking = False
+        handler.turn(handler.get_arc() / 2.0)
+        accel_rate = MAX_TURN_RATE * 0.01
+    else:
+        # No target: drift backwards and sweep the arc
+        handler.accelerate(-0.5)
+        handler.turn(accel_rate - handler.get_angular_velocity())
+        handler.set_arc(PI / 4.0)
+        # Slowly increase the turn rate until a maximum
+        if accel_rate < MAX_TURN_RATE:
+            accel_rate += 0.0001
         else:
-
-                handler.acelerar(-.5)
-                handler.girar(acel - handler.getVelAngular())
-                handler.setArco(PI/4.0)
-
-                if acel < MAX_GIRO:
-                        acel += .0001
-                else:
-                        acel = MAX_GIRO * .01
-
+            accel_rate = MAX_TURN_RATE * 0.01

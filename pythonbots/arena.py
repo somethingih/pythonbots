@@ -1,165 +1,231 @@
-import bot
-from globais import *
-from math import sin, cos, sqrt, atan2
-from numpy import mod
-from vector import Vector
+"""Core simulation engine for the PythonBots game.
 
-#
-# Tiro
-#
-class Tiro(object):
+This module implements the arena where bots and projectiles interact.  It
+defines two classes:
 
-	# constroi um tiro baseado em quem atirou
-	def __init__(self, bot):
-		self.bot = bot
-		self.velocidade = Vector(cos(bot.direcao + bot.canhao), sin(bot.direcao + bot.canhao)) * VEL_TIRO
-		self.posicao = bot.posicao + Vector(cos(bot.direcao + bot.canhao), sin(bot.direcao + bot.canhao)) * (RAIO*1.1)
+* :class:`Shot` – represents a projectile fired by a bot.  A shot
+  travels in a straight line at a constant speed until it hits a wall
+  or a bot.  Subclasses (e.g. in the pygame front end) may override
+  the collision callbacks to provide visual or audio effects.
 
-	# atualiza tiro(incrementa posicao baseada na velocidade)
-	def atualizar(self):
-		self.posicao += self.velocidade
+* :class:`Arena` – manages a collection of bots and shots, updates
+  their state each tick, resolves collisions and exposes a scanning
+  method used by bots to detect enemies.  All identifiers are
+  English‑language; there is no backwards compatibility with the
+  original Portuguese API.
 
-	# callbacks
-	def colisao_bot(self, bot):
-		pass
+The arena is agnostic of the display; the graphical front end is
+implemented in :mod:`pythonbots.pgarena`.
+"""
 
-	def colisao_parede(self, arena):
-		pass
+from __future__ import annotations
 
-#
-# Arena: aonde todos os bots e objetos existem e interagem
-#
-class Arena(object):
+from math import cos, sin, atan2
+from typing import List, Sequence, Tuple
+import math
 
-	bots = []
-	tiros = []
-	ticks = 0
-	
-	def __init__(self, funcoes):
-		self.funcoes = funcoes
+from . import bot as bot_module
+from .vector import Vector
+from .constants import (
+    PI,
+    TAU,
+    RADIUS,
+    ARENA_WIDTH,
+    ARENA_HEIGHT,
+    VISION_RANGE,
+    SHOT_SPEED,
+    SHOT_DAMAGE,
+    SHOT_COLLISION_HEAT,
+    SHOT_IMPACT_VEL,
+    SHOT_IMPACT_ANG,
+    bot_collision_damage,
+    bot_collision_heat,
+)
 
-	def start(self):
-		self.tiros = []
-		self.bots = []
-		self.ticks = 0
-		bot.indice_count = 0
-		for f in self.funcoes:
-			self.bots.append(bot.Bot(self, f))
 
-	# adiciona tiro ao sistema
-	def addTiro(self, tiro):
-		self.tiros.append(tiro)
+class Shot:
+    """Projectile fired by a bot.
 
-	# numero de bots vivos
-	def vivos(self):
-		return len(filter(lambda a: a.ativo, self.bots))
+    Each shot travels at a fixed speed in the direction the firing bot
+    was facing when it pulled the trigger.  Shots carry a reference
+    back to the firing bot so kills can be credited.  When a shot
+    leaves the arena or hits a bot it is removed from the simulation
+    and the appropriate callbacks are invoked.
+    """
 
-	# escaneia regiao
-	def scan(self, bot):
-		# menor distancia ate agora
-		menor = VISAO
-		ind = -1
+    def __init__(self, bot_instance: "bot_module.Bot") -> None:
+        self.bot: bot_module.Bot = bot_instance
+        # Velocity is based on the sum of bot heading and cannon angle
+        self.velocity: Vector = Vector(
+            cos(bot_instance.direction + bot_instance.cannon),
+            sin(bot_instance.direction + bot_instance.cannon),
+        ) * SHOT_SPEED
+        # Spawn slightly ahead of the bot to avoid immediate self‑collision
+        self.position: Vector = bot_instance.position + Vector(
+            cos(bot_instance.direction + bot_instance.cannon),
+            sin(bot_instance.direction + bot_instance.cannon),
+        ) * (RADIUS * 1.1)
 
-		# itera todos bots
-		for b in self.bots:
-			# se nao eh o proprio e esta ativo
-			if b is not bot and b.ativo:
-				# calcula distancia entre os bots
-				distancia = (bot.posicao - b.posicao).length()
-				# verifica se a distancia esta dentro do limiar aceitavel
-				# e eh menor que a menor encontrada ate agora
-				if distancia-RAIO <= VISAO and distancia < menor:
+    def update(self) -> None:
+        """Advance the shot's position by one tick."""
+        self.position += self.velocity
 
-					vet_canhao = Vector(cos(bot.direcao + bot.canhao), sin(bot.direcao + bot.canhao))
-					vet_alvo = b.posicao - bot.posicao
+    # Collision callback placeholders.  Subclasses in pgarena override these.
+    def on_bot_collision(self, bot: "bot_module.Bot") -> None:  # pragma: no cover
+        pass
 
-					angulo = vet_canhao.angle(vet_alvo)
+    def on_wall_collision(self, arena: "Arena") -> None:  # pragma: no cover
+        pass
 
-					if angulo <= mod(bot.arco/2.0 + atan2(RAIO, (bot.posicao - b.posicao).length()), PI):
-						ind = b.indice
-						menor = distancia
-					
-		return menor, ind
 
-	# atualiza bots
-	def atualizar(self):
+class Arena:
+    """Simulated arena containing bots and projectiles."""
 
-		self.ticks += 1
+    bots: List[bot_module.Bot] = []
+    shots: List[Shot] = []
+    ticks: int = 0
 
-		# itera todos os tiros
-		for t in self.tiros:
-			if (not (0 <= t.posicao.x <= TAM_X)) or (not (0 <= t.posicao.y <= TAM_Y)):
-				t.colisao_parede(self)		# chama callback
-				self.tiros.remove(t)	# tiro passou dos limites
-			else:
-				t.atualizar()	# atualiza tiro
+    def __init__(self, functions: Sequence) -> None:
+        """Create a new arena given a list of bot functions.
 
-		# itera todos bots
-		for b in self.bots:
-			# atualiza fisica e colisao com paredes
-			b.atualizar()
-		
-			# itera novamente todos os bots
-			for c in self.bots:
-				# trata colisao com outro bot
-				if c is not b:
-					# calcula distancia entre os bots
-					distancia = (b.posicao - c.posicao).length()
-					# detecta colisao
-					if distancia != 0 and distancia <= RAIO*2:
-						b.colisao_bot(c)	# chama callback
-						c.colisao_bot(b)	# chama callback
+        Parameters
+        ----------
+        functions : sequence of callables
+            A sequence of callables implementing bot strategies.  Each
+            callable will be invoked with a :class:`pythonbots.bot.Handler`
+            instance when the arena starts.
+        """
+        self.functions = list(functions)
 
-						colisao = (b.posicao - c.posicao)	# vetor colisao(ligando os dois)
+    def start(self) -> None:
+        """Reset internal state and spawn bots for a new round."""
+        self.shots = []
+        self.bots = []
+        self.ticks = 0
+        # Reset global bot index counter
+        bot_module.bot_index_count = 0
+        for func in self.functions:
+            self.bots.append(bot_module.Bot(self, func))
 
-						# projeta velocidades no vetor colisao
-						trans_a = b.velocidade.projection(colisao)
-						trans_b = c.velocidade.projection(colisao)
+    def add_shot(self, bot_instance: "bot_module.Bot") -> None:
+        """Create and register a new shot fired by ``bot_instance``."""
+        self.shots.append(Shot(bot_instance))
 
-						# corrige posicoes
-						r = (colisao.unit() * RAIO * 2) - colisao
-						b.posicao += r / 2.0
-						c.posicao -= r / 2.0
+    def alive_count(self) -> int:
+        """Return the number of bots still alive."""
+        return len([b for b in self.bots if b.active])
 
-						# troca velocidades
-						b.velocidade += trans_b - trans_a
-						c.velocidade += trans_a - trans_b						
+    # Portuguese alias
+    def vivos(self) -> int:
+        return self.alive_count()
 
-						# trocam velocidade angular
-						b.vel_angular -= c.vel_angular * 2.0
-						c.vel_angular -= b.vel_angular * 2.0
+    def scan(self, bot_instance: "bot_module.Bot") -> Tuple[float, int]:
+        """Detect another bot within the scanning arc of ``bot_instance``.
 
-						# causa dano
-						dano = DANO_COLISAO_BOT((b.velocidade - c.velocidade).length())
-						if b.ativo: b.vida -= dano
-						if c.ativo: c.vida -= dano
+        Returns a tuple ``(distance, index)`` where ``distance`` is the
+        distance to the nearest detected bot (up to
+        :data:`pythonbots.constants.VISION_RANGE`) and ``index`` is the
+        index of the detected bot or -1 if none is within the scan arc.
+        """
+        nearest: float = VISION_RANGE
+        found_index: int = -1
+        for other in self.bots:
+            if other is bot_instance or not other.active:
+                continue
+            distance = (bot_instance.position - other.position).length()
+            if distance - RADIUS <= VISION_RANGE and distance < nearest:
+                cannon_vec = Vector(
+                    cos(bot_instance.direction + bot_instance.cannon),
+                    sin(bot_instance.direction + bot_instance.cannon),
+                )
+                target_vec = other.position - bot_instance.position
+                angle = cannon_vec.angle(target_vec)
+                # Determine if the angle is within the scan arc plus the target size
+                # Compute the maximum detectable angle.  Add half the
+                # scan arc to the apparent size of the target and wrap
+                # around PI in case the sum exceeds half a turn.  Use
+                # the modulo operator on floats rather than numpy.mod
+                # to avoid requiring the numpy dependency.
+                max_angle = (
+                    bot_instance.scan_arc / 2.0
+                    + math.atan2(RADIUS, (bot_instance.position - other.position).length())
+                ) % PI
+                if angle <= max_angle:
+                    found_index = other.index
+                    nearest = distance
+        return nearest, found_index
 
-						# causa aquecimento
-						aquec = AQUEC_COLISAO_BOT((b.velocidade - c.velocidade).length())
-						b.temp += aquec
-						c.temp += aquec
+    def update(self) -> None:
+        """Advance the simulation by one tick.
 
-			# itera todos os tiros
-			for t in self.tiros:
-				# trata colisao com tiros
-				distancia = (t.posicao - b.posicao).length()
-				if distancia < RAIO:
-					b.colisao_tiro(t)		# chama callback do bot
-					t.colisao_bot(b)		# chama callback do tiro
-
-					if b.ativo: b.vida -= DANO_TIRO		# calcula dano
-					b.temp += AQUEC_COL_TIRO	# esquenta
-
-					# transfere impulso
-					b.velocidade += t.velocidade * IMPACTO_TIRO_VEL
-
-					if not b.ativo:
-						# meche com o angulo, se eh carcaca
-						b.vel_angular += t.velocidade.length() * IMPACTO_TIRO_ANG
-					elif b.vida <= 0:	# se o bot morreu agora
-						# atualiza estatisticas
-						b.killed_by = t.bot
-						t.bot.killed.append(b)
-
-					self.tiros.remove(t)		# remove tiro(bateu no bot)
-
+        Updates projectiles and bots, resolves collisions and applies
+        damage, heat and momentum transfers.  The order of operations
+        loosely follows the original AT‑Robots logic but uses English
+        names and modern Python constructs.
+        """
+        self.ticks += 1
+        # Update shots and remove those leaving the arena bounds
+        for shot in list(self.shots):
+            if not (0.0 <= shot.position.x <= ARENA_WIDTH) or not (
+                0.0 <= shot.position.y <= ARENA_HEIGHT
+            ):
+                shot.on_wall_collision(self)  # callback
+                self.shots.remove(shot)
+            else:
+                shot.update()
+        # Iterate over bots and update physics
+        for b in self.bots:
+            b.update()  # update physics and wall collisions
+            # Check collisions with other bots
+            for c in self.bots:
+                if c is b:
+                    continue
+                distance = (b.position - c.position).length()
+                if distance != 0.0 and distance <= RADIUS * 2:
+                    # trigger collision callbacks
+                    b.on_bot_collision(c)
+                    c.on_bot_collision(b)
+                    collision_vec = b.position - c.position
+                    # Project velocities onto collision vector
+                    trans_b = b.velocity.projection(collision_vec)
+                    trans_c = c.velocity.projection(collision_vec)
+                    # Correct positions to avoid overlap
+                    r = (collision_vec.unit() * (RADIUS * 2)) - collision_vec
+                    b.position += r / 2.0
+                    c.position -= r / 2.0
+                    # Swap translational components
+                    b.velocity += trans_c - trans_b
+                    c.velocity += trans_b - trans_c
+                    # Exchange angular velocity
+                    b.angular_velocity -= c.angular_velocity * 2.0
+                    c.angular_velocity -= b.angular_velocity * 2.0
+                    # Inflict damage
+                    damage = bot_collision_damage((b.velocity - c.velocity).length())
+                    if b.active:
+                        b.health -= damage
+                    if c.active:
+                        c.health -= damage
+                    # Apply heat
+                    heat = bot_collision_heat((b.velocity - c.velocity).length())
+                    b.temperature += heat
+                    c.temperature += heat
+            # Check collisions with shots
+            for shot in list(self.shots):
+                distance = (shot.position - b.position).length()
+                if distance < RADIUS:
+                    b.on_shot_collision(shot)
+                    shot.on_bot_collision(b)
+                    if b.active:
+                        b.health -= SHOT_DAMAGE
+                    b.temperature += SHOT_COLLISION_HEAT
+                    # Transfer momentum
+                    b.velocity += shot.velocity * SHOT_IMPACT_VEL
+                    if not b.active:
+                        # Add angular impulse to corpses
+                        b.angular_velocity += shot.velocity.length() * SHOT_IMPACT_ANG
+                    elif b.health <= 0.0:
+                        # If bot died now, update stats
+                        b.killed_by = shot.bot
+                        shot.bot.killed.append(b)
+                    # Remove the shot after collision
+                    self.shots.remove(shot)
